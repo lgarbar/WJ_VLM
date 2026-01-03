@@ -1,0 +1,15 @@
+{
+  "math": {
+    "page1": {
+      "problems": [
+        {"id": 1, "answer": "23"},
+        {"id": 2, "answer": "57"}
+      ]
+    }
+  },
+  "sentences": {
+    "picture1": {
+      "required_words": ["dog", "running", "park"]
+    }
+  }
+}
