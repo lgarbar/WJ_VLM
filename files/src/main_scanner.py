@@ -34,14 +34,12 @@ def run_precision_assessment(p1_path, p2_path):
         cfg = PAGE_CONFIGS[p_idx]
         clean_path = force_clean(p_path)
         
-        # Visualize content box for debugging
-        from image_utils import visualize_content_box
-        visualize_content_box(clean_path, output_path=f"debug_cells/page_{p_idx+1}_viz.png",
+        visualize_content_box(clean_path, output_path=os.path.join(dirname, f"debug_cells/page_{p_idx+1}_viz.png"),
                               top_margin=cfg['top'], bottom_margin=cfg['bottom'],
                               left_margin=cfg['left'], right_margin=cfg['right'])
         
         # Get individual cells (16 rows x 10 cols, but only process even rows for answers)
-        cells = get_individual_cells(clean_path, 
+        cells = get_individual_cells(clean_path, dirname,
                                     rows=16, cols=10,
                                     top_margin=cfg['top'], 
                                     bottom_margin=cfg['bottom'],
@@ -49,10 +47,10 @@ def run_precision_assessment(p1_path, p2_path):
                                     right_margin=cfg['right'])
         
         # Save sample answer cells for debugging (first 10 answers)
-        os.makedirs("debug_cells", exist_ok=True)
+        os.makedirs(os.path.join(dirname, "debug_cells"), exist_ok=True)
         answer_cells = [cells[i] for i in range(10, 20)]  # cells 10-19 are Q1-Q10
         for idx, cell in enumerate(answer_cells):
-            cell.save(f"debug_cells/page_{p_idx+1}_answer_Q{idx+1}.png")
+            cell.save(os.path.join(dirname, f"debug_cells/page_{p_idx+1}_answer_Q{idx+1}.png"))
         
         print(f"Scanning {len(cells)} cells for Page {p_idx + 1}...")
         for c_idx, cell_img in enumerate(cells):
@@ -97,7 +95,7 @@ def run_precision_assessment(p1_path, p2_path):
             
             # Debug: Save problematic cells
             if question_num in [1, 2, 3, 11, 12, 13, 21, 22, 24, 28, 31, 33, 34, 46, 50, 60, 61, 62, 64, 68, 76, 78, 91, 92, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 121, 134]:
-                debug_path = f"debug_cells/Q{question_num}_page{p_idx+1}_cell{c_idx+1}.png"
+                debug_path = os.path.join(dirname, f"debug_cells/Q{question_num}_page{p_idx+1}_cell{c_idx+1}.png")
                 cell_img.save(debug_path)
             
             all_scanned_answers.append({"ans": text_ans, "conf": confidence})
@@ -168,26 +166,46 @@ def create_colored_visualization(report, p1_path, p2_path):
                 
                 draw.rectangle([(left, top), (right, bottom)], fill=color)
         
-        output_path = f"debug_cells/colored_page_{p_idx+1}.png"
+        output_path = os.path.join(dirname, f"debug_cells/colored_page_{p_idx+1}.png")
         vis_img.save(output_path)
         print(f"Colored visualization saved to: {output_path}")
 
-import sys
-
 if __name__ == "__main__":
-    page1 = "/Users/danielgarcia-barnett/Desktop/Coding/wj_scoring_app/Python/files/test/IMG_6654.png"
-    page2 = "/Users/danielgarcia-barnett/Desktop/Coding/wj_scoring_app/Python/files/test/IMG_6655.png"
+    # 1. Setup Argparse
+    parser = argparse.ArgumentParser(description="WJ-IV Math Scoring Scanner")
+    parser.add_argument("--viz", action="store_true", help="Generate grid visualizations and exit (no OCR)")
+    parser.add_argument("--limit", type=int, default=None, help="Limit OCR to the first N cells (for quick testing)")
+    parser.add_argument("--fpath1", type=str, help="fpath for Page 1")
+    parser.add_argument("--fpath2", type=str, help="fpath for Page 2")
+
+    args = parser.parse_args()
+
+    # 2. Define your paths
+    page1 = args.fpath1
+    page2 = args.fpath2
+    dirname = os.path.dirname(page1)
     
-    # Check if "--viz" was passed in the command line
-    if "--viz" in sys.argv:
-        print("RUNNING IN VISUALIZATION MODE (Skipping OCR)...")
+    # 3. Handle Logic based on flags
+    if args.viz:
+        print("\n[!] RUNNING IN VISUALIZATION MODE (Skipping OCR)")
         from image_utils import force_clean, visualize_content_box
+        
+        # We assume PAGE_CONFIGS is defined globally in main_scanner.py
         for i, p in enumerate([page1, page2]):
             cfg = PAGE_CONFIGS[i]
+            print(f"  -> Processing Page {i+1} grid...")
             clean = force_clean(p)
-            visualize_content_box(clean, output_path=f"debug_cells/page_{i+1}_viz.png",
-                                  top_margin=cfg['top'], bottom_margin=cfg['bottom'],
-                                  left_margin=cfg['left'], right_margin=cfg['right'])
-        print("Done! Check debug_cells/ folder.")
-    else:
-        run_precision_assessment(page1, page2)
+            visualize_content_box(
+                clean, 
+                output_path=os.path.join(dirname, f"debug_cells/page_{i+1}_viz.png"),
+                top_margin=cfg['top'], 
+                bottom_margin=cfg['bottom'],
+                left_margin=cfg['left'], 
+                right_margin=cfg['right']
+            )
+        print("\nDone! Check the 'debug_cells/' folder for results.")
+        sys.exit(0)
+
+    # 4. Standard Run (passing the limit flag if you want to use it in run_precision_assessment)
+    # You could modify run_precision_assessment to accept 'limit=args.limit'
+    run_precision_assessment(page1, page2)

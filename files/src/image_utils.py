@@ -19,7 +19,7 @@ def force_clean(image_path):
         straight_path = straighten_page(clean_path)
     return straight_path
 
-def get_individual_cells(image_path, rows=16, cols=10, buffer_pixels=3, 
+def get_individual_cells(image_path, dirname, rows=16, cols=10, buffer_pixels=3, 
                          top_margin=0.1, bottom_margin=0.9, 
                          left_margin=0.05, right_margin=0.95):
     """
@@ -65,7 +65,7 @@ def get_individual_cells(image_path, rows=16, cols=10, buffer_pixels=3,
     cell_w = grid_w // cols  # 10 columns
     
     cells = []
-    os.makedirs("debug_crops", exist_ok=True)
+    os.makedirs(os.path.join(dirname, "debug_crops"), exist_ok=True)
 
     for r in range(rows):
         pair_i = r // 2
@@ -100,7 +100,7 @@ def get_individual_cells(image_path, rows=16, cols=10, buffer_pixels=3,
             
             # Export EVERY row's first cell to check for vertical drift
             if c == 0:
-                cell.save(f"debug_crops/R{r+1}_C1_check.png")
+                cell.save(os.path.join(dirname, f"debug_crops/R{r+1}_C1_check.png"))
                 
     return cells
 
