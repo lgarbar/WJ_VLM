@@ -1,13 +1,30 @@
 import SwiftUI
 import PhotosUI
+import Combine
 
-// MARK: - Main Content View
+// MARK: - Server Configuration
+// Using ObservableObject so all views refresh when settings changs
+
+class ServerConfig: ObservableObject {
+    // We use @AppStorage to persist to the device
+    @AppStorage("server_ip") var ip: String = "10.0.0.144" {
+        willSet { objectWillChange.send() }
+    }
+    
+    @AppStorage("server_port") var port: String = "5001" {
+        willSet { objectWillChange.send() }
+    }
+    
+    var baseURL: String {
+        "http://\(ip):\(port)"
+    }
+}
+
 struct ContentView: View {
+    @StateObject private var config = ServerConfig()
     @State private var userID: String = ""
     @State private var path = NavigationPath()
-
-    // Ensure this matches your Flask server's local IP
-    let serverURL = "http://10.0.0.144:5001"
+    @State private var showSettings = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -29,35 +46,74 @@ struct ContentView: View {
                 .disabled(userID.isEmpty)
                 .buttonStyle(.borderedProminent)
                 .padding(.horizontal)
+                
+                Text("Connected to: \(config.baseURL)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            .navigationTitle("Home")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape.fill")
+                    }
+                }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView(config: config)
             }
             .navigationDestination(for: String.self) { user in
-                SessionsView(user: user, serverURL: serverURL, path: $path)
+                SessionsView(user: user, config: config, path: $path)
             }
             .navigationDestination(for: SessionPath.self) { sessionPath in
-                SessionDetailView(sessionPath: sessionPath, serverURL: serverURL, path: $path)
+                SessionDetailView(sessionPath: sessionPath, config: config, path: $path)
             }
         }
     }
 }
 
-// MARK: - Models
-struct SessionPath: Hashable {
-    let user: String
-    let subject: String
-}
+// MARK: - Settings View
+struct SettingsView: View {
+    @ObservedObject var config: ServerConfig
+    @Environment(\.dismiss) var dismiss
 
-struct Session: Codable, Identifiable {
-    var id: String { name }
-    let name: String
-    let status: String
-    let score: Int?
-    let image_urls: [String]? // Added to allow quick loading from list
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(header: Text("Server Connection")) {
+                    HStack {
+                        Text("IP Address")
+                        TextField("e.g. 192.168.1.5", text: $config.ip)
+                            .multilineTextAlignment(.trailing)
+                            .keyboardType(.numbersAndPunctuation)
+                    }
+                    HStack {
+                        Text("Port")
+                        TextField("e.g. 5001", text: $config.port)
+                            .multilineTextAlignment(.trailing)
+                            .keyboardType(.numberPad)
+                    }
+                }
+                
+                Section(footer: Text("The app will attempt to connect to \(config.baseURL)")) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .frame(maxWidth: .infinity)
+                    .alignmentGuide(.leading) { _ in 0 }
+                }
+            }
+            .navigationTitle("Advanced Settings")
+        }
+    }
 }
 
 // MARK: - Sessions List View
 struct SessionsView: View {
     let user: String
-    let serverURL: String
+    @ObservedObject var config: ServerConfig
     @Binding var path: NavigationPath
     
     @State private var sessions: [Session] = []
@@ -104,7 +160,7 @@ struct SessionsView: View {
     }
 
     func fetchSessions() {
-        guard let url = URL(string: "\(serverURL)/sessions/\(user)") else { return }
+        guard let url = URL(string: "\(config.baseURL)/sessions/\(user)") else { return }
         URLSession.shared.dataTask(with: url) { data, _, _ in
             if let data = data {
                 if let fetched = try? JSONDecoder().decode([Session].self, from: data) {
@@ -118,6 +174,7 @@ struct SessionsView: View {
     }
 }
 
+// MARK: - Session Row
 struct SessionRow: View {
     let session: Session
     let user: String
@@ -154,7 +211,7 @@ struct SessionRow: View {
 // MARK: - Detail & Upload View
 struct SessionDetailView: View {
     let sessionPath: SessionPath
-    let serverURL: String
+    @ObservedObject var config: ServerConfig
     @Binding var path: NavigationPath
     
     @State private var page1Item: PhotosPickerItem?
@@ -205,7 +262,7 @@ struct SessionDetailView: View {
                         Text("\(finalScore)").font(.title2).bold().foregroundColor(.green)
                     }
                     NavigationLink("View Detailed Scored Pages") {
-                        ResultsView(score: finalScore, imageURLs: scoredImageURLs, serverURL: serverURL)
+                        ResultsView(score: finalScore, imageURLs: scoredImageURLs, serverURL: config.baseURL)
                     }
                 }
             }
@@ -231,17 +288,14 @@ struct SessionDetailView: View {
         isCheckingServer = true
     }
 
-    // NEW: Checks if this subject was already completed on the server
     func fetchExistingMetadata() {
-        guard let url = URL(string: "\(serverURL)/sessions/\(sessionPath.user)") else { return }
+        guard let url = URL(string: "\(config.baseURL)/sessions/\(sessionPath.user)") else { return }
         URLSession.shared.dataTask(with: url) { data, _, _ in
             DispatchQueue.main.async {
                 self.isCheckingServer = false
                 if let data = data, let sessions = try? JSONDecoder().decode([Session].self, from: data) {
                     if let current = sessions.first(where: { $0.name == sessionPath.subject && $0.status == "completed" }) {
-                        // If we found a completed session, pull the score and URLs
                         self.score = current.score
-                        // We fetch full details if metadata.json contains them, or rely on the standard paths
                         self.scoredImageURLs = [
                             "/static/data/user-\(sessionPath.user)/\(sessionPath.subject)/debug_cells/colored_page_1.png",
                             "/static/data/user-\(sessionPath.user)/\(sessionPath.subject)/debug_cells/colored_page_2.png"
@@ -266,7 +320,8 @@ struct SessionDetailView: View {
         errorMessage = nil
         
         let boundary = "Boundary-\(UUID().uuidString)"
-        var request = URLRequest(url: URL(string: "\(serverURL)/score")!)
+        guard let url = URL(string: "\(config.baseURL)/score") else { return }
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
@@ -295,7 +350,8 @@ struct SessionDetailView: View {
 
     func pollStatus(for jobId: String) {
         Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { timer in
-            URLSession.shared.dataTask(with: URL(string: "\(serverURL)/status/\(jobId)")!) { data, _, _ in
+            guard let url = URL(string: "\(config.baseURL)/status/\(jobId)") else { return }
+            URLSession.shared.dataTask(with: url) { data, _, _ in
                 if let data = data, let statusRes = try? JSONDecoder().decode(StatusResponse.self, from: data) {
                     DispatchQueue.main.async {
                         if statusRes.status == "completed" {
@@ -312,7 +368,8 @@ struct SessionDetailView: View {
     }
 
     func fetchResults(for jobId: String) {
-        URLSession.shared.dataTask(with: URL(string: "\(serverURL)/results/\(jobId)")!) { data, _, _ in
+        guard let url = URL(string: "\(config.baseURL)/results/\(jobId)") else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
             DispatchQueue.main.async {
                 self.isUploading = false
                 if let data = data, let res = try? JSONDecoder().decode(ResultsResponse.self, from: data) {
@@ -334,6 +391,7 @@ struct SessionDetailView: View {
     }
 }
 
+// MARK: - Results View
 struct ResultsView: View {
     let score: Int
     let imageURLs: [String]
@@ -357,6 +415,20 @@ struct ResultsView: View {
         }
         .navigationTitle("Analysis Result")
     }
+}
+
+// MARK: - Models & Helpers
+struct SessionPath: Hashable {
+    let user: String
+    let subject: String
+}
+
+struct Session: Codable, Identifiable {
+    var id: String { name }
+    let name: String
+    let status: String
+    let score: Int?
+    let image_urls: [String]?
 }
 
 struct ScoreResponse: Codable { let job_id: String }

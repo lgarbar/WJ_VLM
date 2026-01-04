@@ -8,15 +8,26 @@ def force_clean(image_path):
     directory = os.path.dirname(image_path)
     filename = os.path.basename(image_path)
     name, _ = os.path.splitext(filename)
+    
+    # Define paths
     clean_path = os.path.join(directory, f"{name}_clean.png")
-    straight_path = os.path.join(directory, f"{name}_clean_straight.png")
+    
+    # 1. Always run sips to convert/clean the image to PNG
+    print(f"Force-cleaning {filename} with sips...")
+    try:
+        subprocess.run(
+            ["sips", "-s", "format", "png", image_path, "--out", clean_path], 
+            check=True, 
+            capture_output=True
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"Error during sips processing: {e}")
+        return image_path # Fallback to original if sips fails
 
-    if not os.path.exists(straight_path):
-        if not os.path.exists(clean_path):
-            print(f"Force-cleaning {filename} with sips...")
-            subprocess.run(["sips", "-s", "format", "png", image_path, "--out", clean_path], check=True, capture_output=True)
-        # Straighten the cleaned image
-        straight_path = straighten_page(clean_path)
+    # 2. Always run the straightening logic on the freshly cleaned image
+    print(f"Straightening {filename}...")
+    straight_path = straighten_page(clean_path)
+    
     return straight_path
 
 def get_individual_cells(image_path, dirname, rows=16, cols=10, buffer_pixels=3, 
@@ -241,8 +252,6 @@ def straighten_page(image_path):
         Path to the straightened image
     """
     straightened_path = image_path.replace('.png', '_straight.png')
-    if os.path.exists(straightened_path):
-        return straightened_path
     
     img = cv2.imread(image_path)
     if img is None:
