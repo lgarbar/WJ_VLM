@@ -2,24 +2,38 @@ import SwiftUI
 import PhotosUI
 import Combine
 
-// MARK: - Server Configuration
-// Using ObservableObject so all views refresh when settings changs
+// MARK: - Models
+struct SessionPath: Hashable {
+    let user: String
+    let subject: String
+}
 
+struct Session: Codable, Identifiable {
+    var id: String { name }
+    let name: String
+    let status: String
+    let score: Int?
+}
+
+struct ScoreResponse: Codable { let job_id: String }
+struct StatusResponse: Codable { let status: String }
+struct ResultsResponse: Codable {
+    let score: Int
+    let image_urls: [String]
+}
+
+// MARK: - Server Configuration
 class ServerConfig: ObservableObject {
-    // We use @AppStorage to persist to the device
     @AppStorage("server_ip") var ip: String = "10.0.0.144" {
         willSet { objectWillChange.send() }
     }
-    
     @AppStorage("server_port") var port: String = "5001" {
         willSet { objectWillChange.send() }
     }
-    
-    var baseURL: String {
-        "http://\(ip):\(port)"
-    }
+    var baseURL: String { "http://\(ip):\(port)" }
 }
 
+// MARK: - Main Entry
 struct ContentView: View {
     @StateObject private var config = ServerConfig()
     @State private var userID: String = ""
@@ -40,8 +54,7 @@ struct ContentView: View {
                     .padding(.horizontal)
                 
                 Button(action: { path.append(userID) }) {
-                    Text("Enter")
-                        .frame(maxWidth: .infinity)
+                    Text("Enter").frame(maxWidth: .infinity)
                 }
                 .disabled(userID.isEmpty)
                 .buttonStyle(.borderedProminent)
@@ -54,9 +67,7 @@ struct ContentView: View {
             .navigationTitle("Home")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        showSettings = true
-                    } label: {
+                    Button { showSettings = true } label: {
                         Image(systemName: "gearshape.fill")
                     }
                 }
@@ -96,13 +107,8 @@ struct SettingsView: View {
                             .keyboardType(.numberPad)
                     }
                 }
-                
                 Section(footer: Text("The app will attempt to connect to \(config.baseURL)")) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                    .frame(maxWidth: .infinity)
-                    .alignmentGuide(.leading) { _ in 0 }
+                    Button("Done") { dismiss() }.frame(maxWidth: .infinity)
                 }
             }
             .navigationTitle("Advanced Settings")
@@ -119,6 +125,16 @@ struct SessionsView: View {
     @State private var sessions: [Session] = []
     @State private var isLoading = true
     @State private var newSubjectName = ""
+    
+    // TRACKER: Items touched in this app launch
+    @State private var touchedSessions: Set<String> = []
+    
+    // Rename Dialog State
+    @State private var isRenaming = false
+    @State private var sessionToRename: Session? = nil
+    @State private var renameText = ""
+
+    let timer = Timer.publish(every: 4, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack {
@@ -127,6 +143,7 @@ struct SessionsView: View {
                     .textFieldStyle(RoundedBorderTextFieldStyle())
                 Button("Add") {
                     if !newSubjectName.isEmpty {
+                        touchedSessions.insert(newSubjectName)
                         path.append(SessionPath(user: user, subject: newSubjectName))
                         newSubjectName = ""
                     }
@@ -136,19 +153,20 @@ struct SessionsView: View {
             .padding()
 
             if isLoading {
-                Spacer()
-                ProgressView("Loading Sessions...")
-                Spacer()
+                Spacer(); ProgressView("Loading Sessions..."); Spacer()
             } else {
                 List {
+                    let current = sessions.filter { $0.status == "processing" || touchedSessions.contains($0.name) }
                     Section("Current Sessions") {
-                        ForEach(sessions.filter { $0.status != "completed" }) { session in
-                            SessionRow(session: session, user: user, path: $path)
+                        ForEach(current) { session in
+                            sessionRow(for: session)
                         }
                     }
-                    Section("Past Sessions") {
-                        ForEach(sessions.filter { $0.status == "completed" }) { session in
-                            SessionRow(session: session, user: user, path: $path)
+
+                    let previous = sessions.filter { $0.status == "completed" && !touchedSessions.contains($0.name) }
+                    Section("Previous Sessions") {
+                        ForEach(previous) { session in
+                            sessionRow(for: session)
                         }
                     }
                 }
@@ -157,30 +175,16 @@ struct SessionsView: View {
         }
         .navigationTitle("Sessions: \(user)")
         .onAppear { fetchSessions() }
+        .onReceive(timer) { _ in fetchSessions() }
+        .alert("Rename Subject", isPresented: $isRenaming) {
+            TextField("New Name", text: $renameText)
+            Button("Cancel", role: .cancel) { }
+            Button("Save") { if let s = sessionToRename { performRename(s, to: renameText) } }
+        }
     }
 
-    func fetchSessions() {
-        guard let url = URL(string: "\(config.baseURL)/sessions/\(user)") else { return }
-        URLSession.shared.dataTask(with: url) { data, _, _ in
-            if let data = data {
-                if let fetched = try? JSONDecoder().decode([Session].self, from: data) {
-                    DispatchQueue.main.async {
-                        self.sessions = fetched
-                        self.isLoading = false
-                    }
-                }
-            }
-        }.resume()
-    }
-}
-
-// MARK: - Session Row
-struct SessionRow: View {
-    let session: Session
-    let user: String
-    @Binding var path: NavigationPath
-
-    var body: some View {
+    @ViewBuilder
+    func sessionRow(for session: Session) -> some View {
         HStack {
             VStack(alignment: .leading) {
                 Text(session.name).font(.headline)
@@ -190,21 +194,62 @@ struct SessionRow: View {
             }
             Spacer()
             Circle()
-                .fill(statusColor)
+                .fill(session.status == "processing" ? .yellow : (session.status == "completed" ? .green : .gray))
                 .frame(width: 12, height: 12)
         }
         .contentShape(Rectangle())
         .onTapGesture {
+            // If user opens a session, mark as touched so it stays in "Current"
+            touchedSessions.insert(session.name)
             path.append(SessionPath(user: user, subject: session.name))
+        }
+        .swipeActions {
+            Button("Delete", role: .destructive) { deleteSession(session) }
+            Button("Rename") {
+                sessionToRename = session
+                renameText = session.name
+                isRenaming = true
+            }.tint(.blue)
         }
     }
 
-    var statusColor: Color {
-        switch session.status {
-        case "completed": return .green
-        case "in_progress": return .yellow
-        default: return .gray
-        }
+    // MARK: - API Calls
+    func fetchSessions() {
+        guard let url = URL(string: "\(config.baseURL)/sessions/\(user)") else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            if let data = data, let fetched = try? JSONDecoder().decode([Session].self, from: data) {
+                DispatchQueue.main.async {
+                    self.sessions = fetched
+                    self.isLoading = false
+                }
+            }
+        }.resume()
+    }
+
+    func deleteSession(_ session: Session) {
+        guard let url = URL(string: "\(config.baseURL)/session/delete") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["username": user, "subject": session.name])
+        URLSession.shared.dataTask(with: request) { _, _, _ in fetchSessions() }.resume()
+    }
+
+    func performRename(_ session: Session, to newName: String) {
+        guard let url = URL(string: "\(config.baseURL)/session/rename") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["username": user, "old_name": session.name, "new_name": newName])
+        URLSession.shared.dataTask(with: request) { _, _, _ in
+            DispatchQueue.main.async {
+                if touchedSessions.contains(session.name) {
+                    touchedSessions.remove(session.name)
+                    touchedSessions.insert(newName)
+                }
+                fetchSessions()
+            }
+        }.resume()
     }
 }
 
@@ -235,7 +280,7 @@ struct SessionDetailView: View {
             if isCheckingServer {
                 ProgressView("Checking for previous results...")
             } else {
-                Section("Upload New Photos") {
+                Section("Analysis") {
                     PhotosPicker(selection: $page1Item, matching: .images) {
                         Label(page1Image == nil ? "Select Page 1" : "Page 1 Ready", systemImage: "photo.on.rectangle")
                     }
@@ -247,7 +292,8 @@ struct SessionDetailView: View {
                         if isUploading {
                             ProgressView()
                         } else {
-                            Text("Rerun Analysis").bold()
+                            // Logic: Show "Rerun" if score already exists on server
+                            Text(score != nil ? "Rerun Analysis" : "Run Analysis").bold()
                         }
                     }
                     .disabled(page1Image == nil || page2Image == nil || isUploading)
@@ -294,12 +340,14 @@ struct SessionDetailView: View {
             DispatchQueue.main.async {
                 self.isCheckingServer = false
                 if let data = data, let sessions = try? JSONDecoder().decode([Session].self, from: data) {
-                    if let current = sessions.first(where: { $0.name == sessionPath.subject && $0.status == "completed" }) {
-                        self.score = current.score
-                        self.scoredImageURLs = [
-                            "/static/data/user-\(sessionPath.user)/\(sessionPath.subject)/debug_cells/colored_page_1.png",
-                            "/static/data/user-\(sessionPath.user)/\(sessionPath.subject)/debug_cells/colored_page_2.png"
-                        ]
+                    if let current = sessions.first(where: { $0.name == sessionPath.subject }) {
+                        if current.status == "completed" {
+                            self.score = current.score
+                            self.scoredImageURLs = [
+                                "/static/data/user-\(sessionPath.user)/\(sessionPath.subject)/debug_cells/colored_page_1.png",
+                                "/static/data/user-\(sessionPath.user)/\(sessionPath.subject)/debug_cells/colored_page_2.png"
+                            ]
+                        }
                     }
                 }
             }
@@ -336,7 +384,7 @@ struct SessionDetailView: View {
         body.append(createImageData(image: img2, fieldName: "page2", fileName: "p2.png", boundary: boundary))
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
 
-        URLSession.shared.uploadTask(with: request, from: body) { data, _, error in
+        URLSession.shared.uploadTask(with: request, from: body) { data, _, _ in
             DispatchQueue.main.async {
                 if let data = data, let result = try? JSONDecoder().decode(ScoreResponse.self, from: data) {
                     self.pollStatus(for: result.job_id)
@@ -360,6 +408,7 @@ struct SessionDetailView: View {
                         } else if statusRes.status == "failed" {
                             timer.invalidate()
                             self.isUploading = false
+                            self.errorMessage = "Analysis failed on server."
                         }
                     }
                 }
@@ -415,25 +464,4 @@ struct ResultsView: View {
         }
         .navigationTitle("Analysis Result")
     }
-}
-
-// MARK: - Models & Helpers
-struct SessionPath: Hashable {
-    let user: String
-    let subject: String
-}
-
-struct Session: Codable, Identifiable {
-    var id: String { name }
-    let name: String
-    let status: String
-    let score: Int?
-    let image_urls: [String]?
-}
-
-struct ScoreResponse: Codable { let job_id: String }
-struct StatusResponse: Codable { let status: String }
-struct ResultsResponse: Codable {
-    let score: Int
-    let image_urls: [String]
 }
