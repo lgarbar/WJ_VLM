@@ -11,7 +11,7 @@ PAGE_CONFIGS = {
     1: {"top": 0.00, "bottom": 1, "left": 0.00, "right": 1}  # Page 2
 }
 
-def run_precision_assessment(p1_path, p2_path):
+def run_precision_assessment(p1_path, p2_path, dirname):
     # 1. Load Models
     model_ids = [
         "mlx-community/Qwen2-VL-2B-Instruct-4bit",
@@ -115,9 +115,9 @@ def run_precision_assessment(p1_path, p2_path):
         print(f"Q{entry['question']}: OCR: {entry['detected']} | Expected: {entry['expected']} {entry['status']}{ceiling}")
 
     # 5. Create colored visualization
-    create_colored_visualization(report, p1_path, p2_path)
+    create_colored_visualization(report, p1_path, p2_path, dirname)
 
-def create_colored_visualization(report, p1_path, p2_path):
+def create_colored_visualization(report, p1_path, p2_path, dirname):
     from PIL import Image, ImageDraw
     from image_utils import force_clean
     
@@ -208,4 +208,4 @@ if __name__ == "__main__":
 
     # 4. Standard Run (passing the limit flag if you want to use it in run_precision_assessment)
     # You could modify run_precision_assessment to accept 'limit=args.limit'
-    run_precision_assessment(page1, page2)
+    run_precision_assessment(page1, page2, dirname)
