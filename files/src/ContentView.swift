@@ -51,6 +51,7 @@ struct Session: Codable, Identifiable {
     let name: String
     let status: String
     let score: Int?
+    let image_urls: [String]? // Added to allow quick loading from list
 }
 
 // MARK: - Sessions List View
@@ -99,9 +100,6 @@ struct SessionsView: View {
             }
         }
         .navigationTitle("Sessions: \(user)")
-        .toolbar {
-            Button("Refresh") { fetchSessions() }
-        }
         .onAppear { fetchSessions() }
     }
 
@@ -116,8 +114,7 @@ struct SessionsView: View {
                     }
                 }
             }
-        }
-        .resume()
+        }.resume()
     }
 }
 
@@ -131,7 +128,7 @@ struct SessionRow: View {
             VStack(alignment: .leading) {
                 Text(session.name).font(.headline)
                 if let score = session.score {
-                    Text("Last Score: \(score)").font(.subheadline).foregroundColor(.secondary)
+                    Text("Score: \(score)").font(.subheadline).foregroundColor(.secondary)
                 }
             }
             Spacer()
@@ -168,6 +165,7 @@ struct SessionDetailView: View {
     @State private var score: Int?
     @State private var scoredImageURLs: [String] = []
     @State private var isUploading = false
+    @State private var isCheckingServer = true
     @State private var errorMessage: String?
 
     var body: some View {
@@ -177,60 +175,49 @@ struct SessionDetailView: View {
                 Text("User: \(sessionPath.user)")
             }
             
-            Section("Step 1: Select Assessment Pages") {
-                PhotosPicker(selection: $page1Item, matching: .images) {
-                    Label(page1Image == nil ? "Select Page 1" : "Page 1 Selected", systemImage: "doc.text.viewfinder")
-                }
-                if let image = page1Image {
-                    Image(uiImage: image).resizable().scaledToFit().frame(height: 150).cornerRadius(8)
-                }
-                
-                PhotosPicker(selection: $page2Item, matching: .images) {
-                    Label(page2Image == nil ? "Select Page 2" : "Page 2 Selected", systemImage: "doc.text.viewfinder")
-                }
-                if let image = page2Image {
-                    Image(uiImage: image).resizable().scaledToFit().frame(height: 150).cornerRadius(8)
-                }
-            }
-            
-            Section {
-                Button(action: uploadImages) {
-                    if isUploading {
-                        HStack {
-                            ProgressView().padding(.trailing, 5)
-                            Text("Processing...")
-                        }
-                    } else {
-                        Text("Analyze & Score").bold()
+            if isCheckingServer {
+                ProgressView("Checking for previous results...")
+            } else {
+                Section("Upload New Photos") {
+                    PhotosPicker(selection: $page1Item, matching: .images) {
+                        Label(page1Image == nil ? "Select Page 1" : "Page 1 Ready", systemImage: "photo.on.rectangle")
                     }
-                }
-                .frame(maxWidth: .infinity)
-                .disabled(page1Image == nil || page2Image == nil || isUploading)
-            }
-            
-            if let error = errorMessage {
-                Section("Error") {
-                    Text(error).foregroundColor(.red).font(.caption)
+                    PhotosPicker(selection: $page2Item, matching: .images) {
+                        Label(page2Image == nil ? "Select Page 2" : "Page 2 Ready", systemImage: "photo.on.rectangle")
+                    }
+                    
+                    Button(action: uploadImages) {
+                        if isUploading {
+                            ProgressView()
+                        } else {
+                            Text("Rerun Analysis").bold()
+                        }
+                    }
+                    .disabled(page1Image == nil || page2Image == nil || isUploading)
                 }
             }
             
             if let finalScore = score {
-                Section("Results") {
+                Section("Stored Results") {
                     HStack {
                         Text("Final Score:")
                         Spacer()
-                        Text("\(finalScore)").font(.title).bold().foregroundColor(.blue)
+                        Text("\(finalScore)").font(.title2).bold().foregroundColor(.green)
                     }
-                    NavigationLink("View Scored Pages") {
+                    NavigationLink("View Detailed Scored Pages") {
                         ResultsView(score: finalScore, imageURLs: scoredImageURLs, serverURL: serverURL)
                     }
                 }
             }
+            
+            if let error = errorMessage {
+                Text(error).foregroundColor(.red).font(.caption)
+            }
         }
         .navigationTitle("Session Detail")
-        // This ensures that when you switch sessions, the old data is wiped
         .task(id: sessionPath) {
             resetState()
+            fetchExistingMetadata()
         }
         .onChange(of: page1Item) { _ in loadImg(from: page1Item, target: 1) }
         .onChange(of: page2Item) { _ in loadImg(from: page2Item, target: 2) }
@@ -241,18 +228,34 @@ struct SessionDetailView: View {
         scoredImageURLs = []
         page1Image = nil
         page2Image = nil
-        page1Item = nil
-        page2Item = nil
-        errorMessage = nil
+        isCheckingServer = true
+    }
+
+    // NEW: Checks if this subject was already completed on the server
+    func fetchExistingMetadata() {
+        guard let url = URL(string: "\(serverURL)/sessions/\(sessionPath.user)") else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            DispatchQueue.main.async {
+                self.isCheckingServer = false
+                if let data = data, let sessions = try? JSONDecoder().decode([Session].self, from: data) {
+                    if let current = sessions.first(where: { $0.name == sessionPath.subject && $0.status == "completed" }) {
+                        // If we found a completed session, pull the score and URLs
+                        self.score = current.score
+                        // We fetch full details if metadata.json contains them, or rely on the standard paths
+                        self.scoredImageURLs = [
+                            "/static/data/user-\(sessionPath.user)/\(sessionPath.subject)/debug_cells/colored_page_1.png",
+                            "/static/data/user-\(sessionPath.user)/\(sessionPath.subject)/debug_cells/colored_page_2.png"
+                        ]
+                    }
+                }
+            }
+        }.resume()
     }
 
     func loadImg(from item: PhotosPickerItem?, target: Int) {
         Task {
-            if let data = try? await item?.loadTransferable(type: Data.self),
-               let uiImage = UIImage(data: data) {
-                await MainActor.run {
-                    if target == 1 { page1Image = uiImage } else { page2Image = uiImage }
-                }
+            if let data = try? await item?.loadTransferable(type: Data.self), let uiImage = UIImage(data: data) {
+                await MainActor.run { if target == 1 { page1Image = uiImage } else { page2Image = uiImage } }
             }
         }
     }
@@ -263,8 +266,7 @@ struct SessionDetailView: View {
         errorMessage = nil
         
         let boundary = "Boundary-\(UUID().uuidString)"
-        guard let url = URL(string: "\(serverURL)/score") else { return }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: URL(string: "\(serverURL)/score")!)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
@@ -275,32 +277,25 @@ struct SessionDetailView: View {
             body.append("Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n".data(using: .utf8)!)
             body.append("\(value)\r\n".data(using: .utf8)!)
         }
-
         body.append(createImageData(image: img1, fieldName: "page1", fileName: "p1.png", boundary: boundary))
         body.append(createImageData(image: img2, fieldName: "page2", fileName: "p2.png", boundary: boundary))
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
 
         URLSession.shared.uploadTask(with: request, from: body) { data, _, error in
             DispatchQueue.main.async {
-                if let error = error {
-                    self.isUploading = false
-                    self.errorMessage = error.localizedDescription
-                    return
-                }
                 if let data = data, let result = try? JSONDecoder().decode(ScoreResponse.self, from: data) {
                     self.pollStatus(for: result.job_id)
                 } else {
                     self.isUploading = false
-                    self.errorMessage = "Server error or invalid response"
+                    self.errorMessage = "Upload failed."
                 }
             }
         }.resume()
     }
 
     func pollStatus(for jobId: String) {
-        let statusURL = URL(string: "\(serverURL)/status/\(jobId)")!
         Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { timer in
-            URLSession.shared.dataTask(with: statusURL) { data, _, _ in
+            URLSession.shared.dataTask(with: URL(string: "\(serverURL)/status/\(jobId)")!) { data, _, _ in
                 if let data = data, let statusRes = try? JSONDecoder().decode(StatusResponse.self, from: data) {
                     DispatchQueue.main.async {
                         if statusRes.status == "completed" {
@@ -309,7 +304,6 @@ struct SessionDetailView: View {
                         } else if statusRes.status == "failed" {
                             timer.invalidate()
                             self.isUploading = false
-                            self.errorMessage = "AI Scoring failed."
                         }
                     }
                 }
@@ -318,8 +312,7 @@ struct SessionDetailView: View {
     }
 
     func fetchResults(for jobId: String) {
-        let resultsURL = URL(string: "\(serverURL)/results/\(jobId)")!
-        URLSession.shared.dataTask(with: resultsURL) { data, _, _ in
+        URLSession.shared.dataTask(with: URL(string: "\(serverURL)/results/\(jobId)")!) { data, _, _ in
             DispatchQueue.main.async {
                 self.isUploading = false
                 if let data = data, let res = try? JSONDecoder().decode(ResultsResponse.self, from: data) {
@@ -341,7 +334,6 @@ struct SessionDetailView: View {
     }
 }
 
-// MARK: - Results View
 struct ResultsView: View {
     let score: Int
     let imageURLs: [String]
@@ -350,29 +342,23 @@ struct ResultsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                Text("Final Score: \(score)")
-                    .font(.largeTitle).bold()
-                
+                Text("Final Score: \(score)").font(.largeTitle).bold().padding(.top)
                 ForEach(imageURLs, id: \.self) { urlString in
-                    VStack(alignment: .leading) {
-                        Text("Analysis").font(.caption).foregroundColor(.secondary)
-                        AsyncImage(url: URL(string: serverURL + urlString)) { image in
-                            image.resizable().scaledToFit()
-                        } placeholder: {
-                            ProgressView()
-                        }
-                        .cornerRadius(12)
-                        .shadow(radius: 4)
+                    AsyncImage(url: URL(string: serverURL + urlString)) { image in
+                        image.resizable().scaledToFit()
+                    } placeholder: {
+                        ProgressView()
                     }
+                    .background(Color.gray.opacity(0.1))
+                    .cornerRadius(10)
                     .padding(.horizontal)
                 }
             }
         }
-        .navigationTitle("Detailed Results")
+        .navigationTitle("Analysis Result")
     }
 }
 
-// MARK: - Response Structs
 struct ScoreResponse: Codable { let job_id: String }
 struct StatusResponse: Codable { let status: String }
 struct ResultsResponse: Codable {
